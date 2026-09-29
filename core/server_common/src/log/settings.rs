@@ -25,6 +25,8 @@
 use derive_more::Display;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::{LevelFilter, ParseError};
 
 use iggy_common::{IggyByteSize, IggyDuration};
 
@@ -37,6 +39,53 @@ pub struct LoggingSettings {
     pub max_total_size: IggyByteSize,
     pub rotation_check_interval: IggyDuration,
     pub retention: IggyDuration,
+}
+
+/// `logging.level` in the `RUST_LOG` syntax, parsed more strictly than
+/// `EnvFilter::new` does. `EnvFilter` reads a bare word that is not a level
+/// as a target name and enables only that target, so a typo such as `inof`
+/// turned off every log line, errors included, without a warning.
+#[derive(Debug)]
+pub struct LogFilter(EnvFilter);
+
+#[derive(Debug, thiserror::Error)]
+pub enum LogFilterError {
+    #[error("no filter directive")]
+    Empty,
+
+    #[error(
+        "`{0}` is not a log level (trace, debug, info, warn, error or off); write `{0}=<level>` to filter one target"
+    )]
+    NotALevel(String),
+
+    #[error(transparent)]
+    InvalidDirective(#[from] ParseError),
+}
+
+impl FromStr for LogFilter {
+    type Err = LogFilterError;
+
+    fn from_str(level: &str) -> Result<Self, Self::Err> {
+        let mut directives = level
+            .split(',')
+            .filter(|directive| !directive.is_empty())
+            .peekable();
+        if directives.peek().is_none() {
+            return Err(LogFilterError::Empty);
+        }
+        if let Some(word) = directives.find(|directive| {
+            !directive.contains(['=', '[']) && directive.parse::<LevelFilter>().is_err()
+        }) {
+            return Err(LogFilterError::NotALevel(word.to_owned()));
+        }
+        Ok(Self(EnvFilter::builder().parse(level)?))
+    }
+}
+
+impl From<LogFilter> for EnvFilter {
+    fn from(filter: LogFilter) -> Self {
+        filter.0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +118,53 @@ impl FromStr for TelemetryTransport {
             "grpc" => Ok(TelemetryTransport::GRPC),
             "http" => Ok(TelemetryTransport::HTTP),
             _ => Err(format!("Invalid telemetry transport: {s}")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn given_levels_and_directives_when_parsing_should_accept() {
+        for level in [
+            "off",
+            "INFO",
+            "warn,server=debug,iggy=trace",
+            "info,[request]=debug",
+        ] {
+            assert!(
+                level.parse::<LogFilter>().is_ok(),
+                "rejected valid filter {level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn given_word_that_is_not_a_level_when_parsing_should_reject() {
+        for level in ["inof", "none", "server", "warn,inof"] {
+            assert!(
+                matches!(
+                    level.parse::<LogFilter>(),
+                    Err(LogFilterError::NotALevel(_))
+                ),
+                "accepted {level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn given_malformed_or_empty_filter_when_parsing_should_reject() {
+        assert!(matches!(
+            "server=verbose".parse::<LogFilter>(),
+            Err(LogFilterError::InvalidDirective(_))
+        ));
+        for level in ["", ","] {
+            assert!(
+                matches!(level.parse::<LogFilter>(), Err(LogFilterError::Empty)),
+                "accepted {level:?}"
+            );
         }
     }
 }

@@ -126,6 +126,72 @@ async fn log_rotation_should_be_valid(present_log_config: LogRotationTestConfig)
     run(&harness, &log_dir, present_log_config).await;
 }
 
+#[tokio::test]
+#[parallel]
+async fn given_log_path_existing_in_working_directory_when_server_starts_should_log_under_data_path()
+ {
+    // The server inherits this working directory, so this directory has the
+    // same relative path as the configured log directory.
+    let decoy = tempfile::Builder::new()
+        .prefix("iggy-logs-")
+        .tempdir_in(".")
+        .expect("create decoy directory in the working directory");
+    let log_dir_name = decoy
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("decoy directory name is UTF-8")
+        .to_owned();
+    let extra_envs = HashMap::from([("IGGY_LOGGING_PATH".to_string(), log_dir_name.clone())]);
+    let mut harness = TestHarness::builder()
+        .server(TestServerConfig::builder().extra_envs(extra_envs).build())
+        .build()
+        .unwrap();
+
+    harness.start().await.unwrap();
+
+    let log_file = harness
+        .server()
+        .data_path()
+        .join(&log_dir_name)
+        .join(IGGY_LOG_BASE_NAME);
+    assert!(log_file.is_file(), "no log file at {}", log_file.display());
+    let leaked = std::fs::read_dir(decoy.path())
+        .expect("read decoy directory")
+        .count();
+    assert_eq!(
+        leaked,
+        0,
+        "the server wrote logs into the working directory {}",
+        decoy.path().display()
+    );
+}
+
+#[tokio::test]
+#[parallel]
+async fn given_rust_log_and_config_level_when_server_starts_should_apply_rust_log() {
+    // Only the startup line from `server_common` tells the two filters apart;
+    // the harness needs the other info lines to see the cluster form.
+    let extra_envs = HashMap::from([
+        (
+            "IGGY_LOGGING_LEVEL".to_string(),
+            "info,server_common=warn".to_string(),
+        ),
+        ("RUST_LOG".to_string(), "info".to_string()),
+    ]);
+    let mut harness = TestHarness::builder()
+        .server(TestServerConfig::builder().extra_envs(extra_envs).build())
+        .build()
+        .unwrap();
+
+    harness.start().await.unwrap();
+
+    assert!(
+        harness.server().stdout_contains("Log filter: info"),
+        "the server_common startup line is missing, so logging.level overrode RUST_LOG"
+    );
+}
+
 async fn run(harness: &TestHarness, log_dir: &str, present_log_config: LogRotationTestConfig) {
     let done_status = false;
     let present_log_test_title = present_log_config.name.clone();
