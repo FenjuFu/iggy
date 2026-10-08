@@ -1,0 +1,63 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Fork Python check
+on:
+  push:
+    branches: [ci-python-delete-segments]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  prek:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Setup Rust with cache
+        uses: ./.github/actions/utils/setup-rust-with-cache
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Install hook tools
+        run: |
+          npm install -g markdownlint-cli
+          cargo install --locked prek typos-cli cargo-sort
+          cargo install --locked hawkeye --version "$(cat .github/config/hawkeye.version)"
+          curl -fsSL -o /tmp/taplo.gz https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-x86_64.gz
+          gunzip -c /tmp/taplo.gz > /tmp/taplo && chmod +x /tmp/taplo && sudo mv /tmp/taplo /usr/local/bin/
+          (cd foreign/python && uv sync --frozen --extra dev --extra testing --extra testing-docker)
+      - name: Run prek on the change
+        run: |
+          prek run --from-ref HEAD~3 --to-ref HEAD~1 --show-diff-on-failure
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [lint, test]
+    uses: ./.github/workflows/_test.yml
+    with:
+      component: sdk-python
+      task: ${{ matrix.task }}
